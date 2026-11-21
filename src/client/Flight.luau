@@ -42,8 +42,8 @@ local WORLD_BEHIND = 2 -- chunks kept behind
 local MAX_CHUNK_BUILDS_PER_FRAME = 2 -- spreads scenery cost across frames
 local CHUNK_RETRY_DELAY = 1 -- seconds before a failed chunk build is retried
 
-local HANGAR_SPAWN = CFrame.new(0, 5.3, 32)
-local HANGAR_PLANE_PARK = CFrame.new(-38, 7, 6) * CFrame.Angles(0, -math.pi / 2, 0)
+local HANGAR_SPAWN = CFrame.new(0, 5.3, 42)
+local HANGAR_PLANE_PARK = CFrame.new(-54, 7, -4) * CFrame.Angles(0, -math.pi / 2, 0)
 local FLIGHT_CAMERA_OFFSET = Vector3.new(0, 9, 22)
 local PLAYER_PLANE_SCALE = 1.18
 local CAMERA_SHAKE_DECAY = 2.5 -- shake units lost per second
@@ -57,12 +57,19 @@ local GROUND_DRAG = 1.4
 local GROUND_IDLE_DRAG = 8.5
 local GRAVITY = 38
 local VERTICAL_DRAG = 0.12
-local MAX_VERTICAL_SPEED_FACTOR = 0.72
+local MAX_VERTICAL_SPEED_FACTOR = 0.73
+local VERTICAL_CONTROL_MULTIPLIER = 1.02
+local BRAKE_DRAG = 4.5
+local TURN_RATE = math.rad(90)
+local ENEMY_WAKE_DISTANCE = 115
+local ENEMY_STANDOFF_DISTANCE = 8
+local ENEMY_TRACKING_RATE = 2
+local ENEMY_MIN_APPROACH_SPEED = 14
 local MAX_BANK_ANGLE = math.rad(28)
 local BOUNDARY_MARGIN = 1.8
 local CRASH_GRAVITY = 62
 
-local MAX_ACTIVE_ENEMIES = 48
+local MAX_ACTIVE_ENEMIES = 60
 local MAX_ENEMY_PROJECTILES = 60
 local DEFAULT_PROJECTILE_DAMAGE = 8
 local CONTACT_COOLDOWN = 1.0
@@ -137,6 +144,8 @@ local sky: Sky?
 local planePos = Vector3.new(0, GameConfig.Corridor.PlaneGroundClearance or 2.3, 0)
 local planeVelocity = Vector3.zero
 local planeRotation = CFrame.lookAt(Vector3.zero, Vector3.new(0, 0, -1))
+local headingYaw = 0
+local wrongWay = false
 local bank = 0
 local grounded = true
 local crashing = false
@@ -271,7 +280,8 @@ local function emitRunUpdate(force: boolean?)
 		comboMultiplier(),
 		boostCharge,
 		freeRevives + paidRevives,
-		boosting
+		boosting,
+		wrongWay
 	)
 end
 
@@ -517,23 +527,17 @@ end
 
 -- ---------------------------------------------------------------- input ----
 local function readInput(): Vector3
-	local x, y, forward = 0, 0, 0
+	local x, y, throttle = 0, 0, 0
 	if UserInputService.KeyboardEnabled then
-		if UserInputService:IsKeyDown(keyBindings.Forward) then forward += 1 end
-		if UserInputService:IsKeyDown(keyBindings.Backward) then forward -= 1 end
+		if UserInputService:IsKeyDown(keyBindings.Forward) then throttle = 1 end
 		if UserInputService:IsKeyDown(keyBindings.Left) then x -= 1 end
 		if UserInputService:IsKeyDown(keyBindings.Right) then x += 1 end
 		if UserInputService:IsKeyDown(keyBindings.Ascend) then y += 1 end
 		if UserInputService:IsKeyDown(keyBindings.Descend) then y -= 1 end
 	end
 
-	-- Roblox world forward for this project is -Z. Mouse position is deliberately
-	-- absent here: it is reserved exclusively for aiming.
-	local movement = Vector3.new(x, y, -forward)
-	if movement.Magnitude > 1 then
-		movement = movement.Unit
-	end
-	return movement
+	-- Backward is a brake, not reverse thrust. Mouse input remains dedicated to aiming.
+	return Vector3.new(x, y, throttle)
 end
 
 -- Fire intent is tracked per source so releasing one input (for example the
@@ -766,6 +770,10 @@ local function buildHangar(requestedTheme: string?)
 		egg.Color = eggCfg.Color
 		egg.Material = Enum.Material.SmoothPlastic
 		egg.Shape = Enum.PartType.Ball
+		local eggMesh = Instance.new("SpecialMesh")
+		eggMesh.MeshType = Enum.MeshType.Head
+		eggMesh.Scale = Vector3.new(1.05, 1.18, 1.05)
+		eggMesh.Parent = egg
 		egg.Anchored = true
 		egg.CanCollide = false
 		egg.Parent = pod
@@ -1347,6 +1355,11 @@ local function spawnEnemy(enemyId: string, options: SpawnOptions?): any?
 		Generation = opts.Generation or 0,
 		FireTimer = math.max(0.1, cfg.FireInterval or 2),
 		NextContactDamage = 0,
+		Engaged = false,
+		Passed = false,
+		AbilityTimer = cfg.AbilityInterval or 2.8,
+		DashTimer = 0,
+		PhaseSide = 1,
 	}
 	table.insert(enemies, record)
 	return record
@@ -1643,6 +1656,7 @@ local function fireWeapon(screenPos: Vector2?, forcedTarget: any?)
 				Effects.Tracer(muzzle + spreadOffset, enemy.Pos, weapon.Color)
 				enemy.Health -= shotDamage
 				Effects.DamageNumber(enemy.Pos, shotDamage, weapon.Color)
+				Effects.Impact(enemy.Pos, weapon.Color)
 				if enemy.Health <= 0 then
 					killEnemy(enemy, true)
 				end
@@ -1753,8 +1767,6 @@ end
 local function updateEnemies(dt: number)
 	local corridor = GameConfig.Corridor
 
-	-- Reverse iteration makes removals safe and avoids skipping entries.
-	-- Newly split children are appended and will be processed on the next frame.
 	for index = #enemies, 1, -1 do
 		local enemy = enemies[index]
 		if not enemy.Alive then
@@ -1768,39 +1780,96 @@ local function updateEnemies(dt: number)
 		if enemy.Boss then
 			updateBoss(enemy, dt)
 		else
-			if behavior == "zigzag" then
-				local baseX = enemy.BaseX or enemy.Pos.X
-				local baseY = enemy.BaseY or enemy.Pos.Y
-				enemy.Pos = Vector3.new(
-					Utility.Clamp(baseX + math.sin(enemy.T * 3) * 22, -corridor.HalfWidth, corridor.HalfWidth),
-					Utility.Clamp(baseY + math.cos(enemy.T * 2) * 8, corridor.MinHeight, corridor.MaxHeight),
-					enemy.Pos.Z + enemy.Speed * dt
-				)
-			elseif behavior == "ranged" then
-				enemy.Pos += Vector3.new(0, 0, enemy.Speed * 0.5 * dt)
-				enemy.FireTimer -= dt
-				if enemy.FireTimer <= 0 and enemy.Pos.Z < planePos.Z - 20 then
-					enemy.FireTimer = math.max(0.1, enemy.Cfg.FireInterval or 2)
-					spawnEnemyProjectile(
-						enemy.Pos,
-						nil,
-						math.max(1, enemy.Cfg.ProjectileSpeed or 40),
-						enemy.Cfg.ProjectileDamage or DEFAULT_PROJECTILE_DAMAGE,
-						true,
-						nil
-					)
-				end
-			else
-				enemy.Pos += Vector3.new(0, 0, enemy.Speed * dt)
+			local aheadDistance = planePos.Z - enemy.Pos.Z
+			if not enemy.Passed and aheadDistance <= 0 then
+				enemy.Passed = true
+			elseif not enemy.Passed and aheadDistance <= ENEMY_WAKE_DISTANCE then
+				enemy.Engaged = true
 			end
 
-			-- Enemies track the plane gently without letting zigzag motion drift away.
-			if behavior ~= "zigzag" then
-				enemy.Pos = Vector3.new(
-					Utility.Lerp(enemy.Pos.X, planePos.X, math.clamp(dt * 0.35, 0, 1)),
-					Utility.Lerp(enemy.Pos.Y, planePos.Y, math.clamp(dt * 0.25, 0, 1)),
-					enemy.Pos.Z
-				)
+			local nextX, nextY, nextZ = enemy.Pos.X, enemy.Pos.Y, enemy.Pos.Z
+			local playerMoving = Vector3.new(planeVelocity.X, 0, planeVelocity.Z).Magnitude > 3
+
+			if not enemy.Passed and enemy.Engaged and playerMoving and behavior ~= "mine" then
+				local approachSpeed = math.max(enemy.Speed or 0, ENEMY_MIN_APPROACH_SPEED)
+
+				if behavior == "charger" then
+					enemy.AbilityTimer -= dt
+					if enemy.AbilityTimer <= 0 then
+						enemy.AbilityTimer = enemy.Cfg.AbilityInterval or 3.4
+						enemy.DashTimer = 0.55
+					end
+					if enemy.DashTimer > 0 then
+						approachSpeed *= 2.6
+						enemy.DashTimer = math.max(0, enemy.DashTimer - dt)
+					else
+						approachSpeed *= 0.65
+					end
+				end
+
+				local desiredZ = planePos.Z - ENEMY_STANDOFF_DISTANCE
+				if nextZ < desiredZ then
+					nextZ = math.min(desiredZ, nextZ + approachSpeed * dt)
+				end
+
+				local targetX, targetY = planePos.X, planePos.Y
+				if behavior == "zigzag" then
+					targetX += math.sin(enemy.T * 2.2) * 4
+					targetY += math.cos(enemy.T * 1.6) * 2
+				elseif behavior == "phase" then
+					enemy.AbilityTimer -= dt
+					if enemy.AbilityTimer <= 0 then
+						enemy.PhaseSide = -(enemy.PhaseSide or 1)
+						enemy.AbilityTimer = enemy.Cfg.AbilityInterval or 2.2
+					end
+					targetX += (enemy.PhaseSide or 1) * 13
+					targetY += math.sin(enemy.T * 2) * 4
+				end
+
+				local alpha = math.clamp(dt * ENEMY_TRACKING_RATE, 0, 1)
+				nextX = Utility.Lerp(nextX, targetX, alpha)
+				nextY = Utility.Lerp(nextY, targetY, alpha)
+			elseif not enemy.Passed and not enemy.Engaged and behavior == "zigzag" then
+				local baseX, baseY = enemy.BaseX or enemy.Pos.X, enemy.BaseY or enemy.Pos.Y
+				nextX = Utility.Clamp(baseX + math.sin(enemy.T * 3) * 22,
+					-corridor.HalfWidth + 3, corridor.HalfWidth - 3)
+				nextY = Utility.Clamp(baseY + math.cos(enemy.T * 2) * 8,
+					corridor.MinHeight, corridor.MaxHeight)
+			elseif enemy.Engaged and not playerMoving then
+				-- Brake/stop means the enemy freezes at its current position.
+				nextX, nextY, nextZ = enemy.Pos.X, enemy.Pos.Y, enemy.Pos.Z
+			end
+
+			if not enemy.Passed then
+				enemy.Pos = clampToCorridor(Vector3.new(nextX, nextY, nextZ))
+			end
+
+			if behavior == "mine" and enemy.Engaged and not enemy.Passed then
+				enemy.FireTimer -= dt
+				if enemy.FireTimer <= 0 then
+					enemy.FireTimer = math.max(1.2, enemy.Cfg.FireInterval or 2.8)
+					local aim = planePos - enemy.Pos
+					if aim.Magnitude > 0.01 then
+						local forward = aim.Unit
+						local right = Vector3.yAxis:Cross(forward)
+						if right.Magnitude < 0.01 then right = Vector3.xAxis else right = right.Unit end
+						for _, spread in ipairs({ -0.16, 0, 0.16 }) do
+							spawnEnemyProjectile(enemy.Pos, (forward + right * spread).Unit,
+								enemy.Cfg.ProjectileSpeed or 32,
+								enemy.Cfg.ProjectileDamage or DEFAULT_PROJECTILE_DAMAGE,
+								false, 1.8)
+						end
+					end
+				end
+			elseif (behavior == "ranged" or behavior == "phase") and enemy.Engaged and not enemy.Passed then
+				enemy.FireTimer -= dt
+				if enemy.FireTimer <= 0 and enemy.Pos.Z < planePos.Z - ENEMY_STANDOFF_DISTANCE * 0.75 then
+					enemy.FireTimer = math.max(0.9, enemy.Cfg.FireInterval or 2)
+					spawnEnemyProjectile(enemy.Pos, nil,
+						math.max(1, enemy.Cfg.ProjectileSpeed or 40),
+						enemy.Cfg.ProjectileDamage or DEFAULT_PROJECTILE_DAMAGE,
+						true, nil)
+				end
 			end
 		end
 
@@ -1808,31 +1877,23 @@ local function updateEnemies(dt: number)
 			enemy.Model:PivotTo(CFrame.lookAt(enemy.Pos, enemy.Pos + Vector3.new(0, 0, 1)))
 		end
 
-		-- Contact damage is rate-limited. A boss is not destroyed just because
-		-- it touched the plane; tanks and bosses can only damage once per cooldown.
 		local contactDistance = (enemy.Pos - planePos).Magnitude
 		if contactDistance < 5 and runTime >= (enemy.NextContactDamage or 0) then
 			enemy.NextContactDamage = runTime + (if enemy.Boss then BOSS_CONTACT_COOLDOWN else CONTACT_COOLDOWN)
 			damagePlayer(enemy.Damage or 0)
-
 			if not enemy.Boss then
-				if behavior == "tank" then
+				if behavior == "tank" or behavior == "mine" then
 					enemy.Health -= 20
-					if enemy.Health <= 0 then
-						killEnemy(enemy, true)
-					end
+					if enemy.Health <= 0 then killEnemy(enemy, true) end
 				else
 					killEnemy(enemy, false)
 				end
 			end
 		end
 
-		-- Enemies that fly past the plane vanish quietly. The boss never does:
-		-- it keeps pace with the plane until it is defeated.
-		if enemy.Alive and not enemy.Boss and (enemy.Pos - planePos).Magnitude > 300 then
+		if enemy.Alive and not enemy.Boss and (enemy.Pos - planePos).Magnitude > 340 then
 			despawnEnemy(enemy)
 		end
-
 		if not enemy.Alive then
 			table.remove(enemies, index)
 		end
@@ -1939,6 +2000,7 @@ local function updateZone()
 	if newZone ~= zone then
 		zone = newZone
 		applyZoneLighting(zone)
+		Effects.PlayMusic(zone.Song)
 		emitRunUpdate(true)
 	end
 end
@@ -2057,26 +2119,52 @@ local function update(dt: number)
 
 	local floorY = corridor.GroundY + (corridor.PlaneGroundClearance or 2.3)
 	local wasGrounded = grounded
-	local acceleration = FLIGHT_ACCELERATION * (if boosting then 1.18 else 1)
-	planeVelocity += moveInput * acceleration * dt
-	planeVelocity += Vector3.new(0, -GRAVITY, 0) * dt
+	local braking = UserInputService.KeyboardEnabled
+		and UserInputService:IsKeyDown(keyBindings.Backward)
+	local throttle = if braking then 0 else moveInput.Z
 
-	-- Air resistance preserves a little glide; runway friction brings the plane
-	-- fully to rest. No input means horizontal velocity decays and gravity lands it.
-	local hasHorizontalInput = Vector3.new(moveInput.X, 0, moveInput.Z).Magnitude > 0.01
-	local drag = if wasGrounded then (if hasHorizontalInput then GROUND_DRAG else GROUND_IDLE_DRAG) else AIR_DRAG
+	-- Steering changes the aircraft's heading and curves its existing momentum.
+	local yawDelta = -moveInput.X * TURN_RATE * dt
+	headingYaw = (headingYaw + yawDelta) % (math.pi * 2)
+	local horizontalVelocity = Vector3.new(planeVelocity.X, 0, planeVelocity.Z)
+	if horizontalVelocity.Magnitude > 0.01 and math.abs(yawDelta) > 0 then
+		local rotated = CFrame.Angles(0, yawDelta, 0):VectorToWorldSpace(horizontalVelocity)
+		planeVelocity = Vector3.new(rotated.X, planeVelocity.Y, rotated.Z)
+	end
+
+	local forwardDirection = CFrame.Angles(0, headingYaw, 0).LookVector
+	wrongWay = forwardDirection:Dot(Vector3.new(0, 0, -1)) < -0.25
+
+	-- W accelerates along the nose. S cuts thrust and applies stronger drag.
+	local acceleration = FLIGHT_ACCELERATION * (if boosting then 1.18 else 1)
+	planeVelocity += forwardDirection * (throttle * acceleration) * dt
+	planeVelocity += Vector3.new(
+		0,
+		moveInput.Y * acceleration * VERTICAL_CONTROL_MULTIPLIER - GRAVITY,
+		0
+	) * dt
+
+	local drag = if wasGrounded then GROUND_IDLE_DRAG else AIR_DRAG
+	if throttle > 0.01 and wasGrounded then
+		drag = GROUND_DRAG
+	end
+	if braking then
+		drag = if wasGrounded then GROUND_IDLE_DRAG else BRAKE_DRAG
+	end
+
 	planeVelocity = Vector3.new(
 		planeVelocity.X * math.exp(-drag * dt),
 		planeVelocity.Y * math.exp(-VERTICAL_DRAG * dt),
 		planeVelocity.Z * math.exp(-drag * dt)
 	)
 
-	local horizontalVelocity = Vector3.new(planeVelocity.X, 0, planeVelocity.Z)
+	horizontalVelocity = Vector3.new(planeVelocity.X, 0, planeVelocity.Z)
 	local maxHorizontal = math.max(8, currentSpeed)
 	if horizontalVelocity.Magnitude > maxHorizontal then
 		horizontalVelocity = horizontalVelocity.Unit * maxHorizontal
 		planeVelocity = Vector3.new(horizontalVelocity.X, planeVelocity.Y, horizontalVelocity.Z)
 	end
+
 	planeVelocity = Vector3.new(
 		planeVelocity.X,
 		math.clamp(planeVelocity.Y, -currentSpeed * MAX_VERTICAL_SPEED_FACTOR, currentSpeed * MAX_VERTICAL_SPEED_FACTOR),
@@ -2088,33 +2176,49 @@ local function update(dt: number)
 	local boundaryY = corridor.MaxHeight - BOUNDARY_MARGIN
 	local hitSide = math.abs(nextPosition.X) >= boundaryX
 	local hitCeiling = nextPosition.Y >= boundaryY
-	if hitSide or hitCeiling then
+	local hitGround = not wasGrounded and nextPosition.Y <= floorY
+
+	if hitSide or hitCeiling or hitGround then
 		planePos = Vector3.new(
 			math.clamp(nextPosition.X, -boundaryX, boundaryX),
 			math.min(nextPosition.Y, boundaryY),
 			nextPosition.Z
 		)
-		local crashFloor = corridor.GroundY + (corridor.PlaneGroundClearance or 2.3)
-		if planePos.Y <= crashFloor + 0.25 then
-			planePos = Vector3.new(planePos.X, crashFloor + 7, planePos.Z)
+
+		if hitGround then
+			planePos = Vector3.new(planePos.X, floorY + 6, planePos.Z)
+			crashReason = "ground impact"
+			planeVelocity = Vector3.new(planeVelocity.X * 0.3,
+				-math.max(24, math.abs(planeVelocity.Y)), planeVelocity.Z * 0.3)
+		else
+			if planePos.Y <= floorY + 0.25 then
+				planePos = Vector3.new(planePos.X, floorY + 7, planePos.Z)
+			end
+			crashReason = if hitSide then "side barrier" else "upper barrier"
+			planeVelocity = Vector3.new(planeVelocity.X * 0.25,
+				-math.max(18, math.abs(planeVelocity.Y) * 0.45), planeVelocity.Z * 0.3)
 		end
+
 		crashing = true
 		crashElapsed = 0
-		crashReason = if hitSide then "side barrier" else "upper barrier"
-		planeVelocity = Vector3.new(planeVelocity.X * 0.25, -math.max(18, math.abs(planeVelocity.Y) * 0.45), planeVelocity.Z * 0.3)
 		resetPointerInput()
-		Effects.Explosion(planePos, Color3.fromRGB(100, 220, 255), 15)
+		Effects.Explosion(planePos,
+			if hitGround then Color3.fromRGB(255, 145, 70) else Color3.fromRGB(100, 220, 255),
+			if hitGround then 19 else 15)
 		Effects.Play("Hit", nil, 0.65)
-		State.EmitNotify("ELECTRICAL BARRIER — " .. string.upper(crashReason) .. " — CRITICAL DAMAGE")
+		State.EmitNotify(
+			if hitGround then "GROUND IMPACT — AIRCRAFT DESTROYED"
+			else "ELECTRICAL BARRIER — " .. string.upper(crashReason) .. " — CRITICAL DAMAGE"
+		)
 	else
 		planePos = nextPosition
 	end
 
-	-- Ground contact is safe. Landing clamps downward velocity and lets friction
-	-- settle the aircraft instead of treating the runway as a lethal boundary.
-	if planePos.Y <= floorY then
+	if not crashing and planePos.Y <= floorY then
 		planePos = Vector3.new(planePos.X, floorY, planePos.Z)
-		if planeVelocity.Y < 0 then planeVelocity = Vector3.new(planeVelocity.X, 0, planeVelocity.Z) end
+		if planeVelocity.Y < 0 then
+			planeVelocity = Vector3.new(planeVelocity.X, 0, planeVelocity.Z)
+		end
 		grounded = true
 	else
 		grounded = false
@@ -2132,25 +2236,17 @@ local function update(dt: number)
 		end
 	end
 
-	-- The aircraft faces its actual 3D velocity. With no meaningful movement it
-	-- preserves the last heading; lateral input produces a natural bank.
+	-- The plane follows its steered heading while retaining its vertical pitch.
 	local targetBank = -moveInput.X * MAX_BANK_ANGLE
 	bank = Utility.Lerp(bank, targetBank, math.clamp(dt * 4.5, 0, 1))
-	if planeVelocity.Magnitude > 2 then
-		local direction = planeVelocity.Unit
-		local upReference = if math.abs(direction:Dot(Vector3.yAxis)) > 0.97 then Vector3.zAxis else Vector3.yAxis
-		planeRotation = CFrame.lookAt(planePos, planePos + direction, upReference) * CFrame.Angles(0, 0, bank)
-	elseif grounded then
-		local restingForward = Vector3.new(planeRotation.LookVector.X, 0, planeRotation.LookVector.Z)
-		if restingForward.Magnitude < 0.1 then
-			restingForward = Vector3.new(0, 0, -1)
-		else
-			restingForward = restingForward.Unit
-		end
-		planeRotation = CFrame.lookAt(planePos, planePos + restingForward, Vector3.yAxis)
-	else
-		planeRotation = CFrame.new(planePos) * planeRotation.Rotation
-	end
+	local forwardDirection = CFrame.Angles(0, headingYaw, 0).LookVector
+	local facingDirection = (
+		forwardDirection * math.max(Vector3.new(planeVelocity.X, 0, planeVelocity.Z).Magnitude, 2)
+		+ Vector3.yAxis * planeVelocity.Y
+	).Unit
+	local upReference = if math.abs(facingDirection:Dot(Vector3.yAxis)) > 0.97 then Vector3.zAxis else Vector3.yAxis
+	planeRotation = CFrame.lookAt(planePos, planePos + facingDirection, upReference)
+		* CFrame.Angles(0, 0, bank)
 	if planeModel and planeModel.Parent then
 		planeModel:PivotTo(planeRotation)
 		local propeller = planeModel:FindFirstChild("Propeller", true)
@@ -2205,7 +2301,7 @@ local function update(dt: number)
 
 	-- Spawn interval shrinks with distance (more enemies) down to a floor.
 	lastSpawn += dt
-	local spawnInterval = math.max(0.7, 1.8 - distance / 4000)
+	local spawnInterval = math.max(0.62, 1.65 - distance / 4200)
 	local enemyPool = zone.Enemies
 	if lastSpawn >= spawnInterval and not bossActive
 		and type(enemyPool) == "table" and #enemyPool > 0 then
@@ -2268,6 +2364,27 @@ local function clearRunWorld()
 	table.clear(projectiles)
 end
 
+
+-- Hide the default Studio Baseplate locally while procedural flight scenery is active.
+local hiddenBaseplate: BasePart? = nil
+local previousBaseplateTransparency: number? = nil
+
+local function hideDefaultBaseplate()
+	local candidate = workspace:FindFirstChild("Baseplate")
+	if candidate and candidate:IsA("BasePart") then
+		hiddenBaseplate = candidate
+		previousBaseplateTransparency = candidate.LocalTransparencyModifier
+		candidate.LocalTransparencyModifier = 1
+	end
+end
+
+local function restoreDefaultBaseplate()
+	if hiddenBaseplate and hiddenBaseplate.Parent and previousBaseplateTransparency ~= nil then
+		hiddenBaseplate.LocalTransparencyModifier = previousBaseplateTransparency
+	end
+	hiddenBaseplate = nil
+	previousBaseplateTransparency = nil
+end
 
 -- ------------------------------------------------------------ lifecycle ----
 function Flight.IsRunning(): boolean
@@ -2374,6 +2491,8 @@ function Flight.StartRun()
 	planePos = Vector3.new(0, GameConfig.Corridor.GroundY + (GameConfig.Corridor.PlaneGroundClearance or 2.3), 0)
 	planeVelocity = Vector3.zero
 	planeRotation = CFrame.lookAt(planePos, planePos + Vector3.new(0, 0, -1))
+	headingYaw = 0
+	wrongWay = false
 	grounded = true
 	crashing = false
 	crashElapsed = 0
@@ -2428,10 +2547,12 @@ function Flight.StartRun()
 
 	buildAllyUnits(stats.Allies or State.Data.Allies)
 
+	hideDefaultBaseplate()
 	hideHangar()
 	hideCharacter()
 	ensureAtmosphere()
 	applyZoneLighting(zone, true)
+	Effects.PlayMusic(zone.Song)
 	setDefaultControlsEnabled(false)
 
 	setCameraTarget(CFrame.new(planePos), FLIGHT_CAMERA_OFFSET)
@@ -2488,6 +2609,7 @@ function Flight.EndRun(reason: string)
 	})
 
 	clearRunWorld()
+	restoreDefaultBaseplate()
 	bossActive = false
 	bossRecord = nil
 	setDefaultControlsEnabled(true)

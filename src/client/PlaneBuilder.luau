@@ -438,6 +438,12 @@ function PlaneBuilder.BuildPlane(planeId: string): Model
 	local model, aileronL, aileronR = build(config)
 	model.Name = "Plane_" .. planeId
 	addAircraftFinish(model, config, planeId)
+	-- Aircraft only: remove the decorative person from every plane.
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant.Name == "PilotBody" or descendant.Name == "PilotHead" then
+			descendant:Destroy()
+		end
+	end
 
 	-- Flight animates these; missing ones simply never move.
 	if aileronL then

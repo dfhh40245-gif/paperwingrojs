@@ -87,6 +87,7 @@ local lastHealth = 0
 local lastStreakTier = 0
 local bindingCaptureAction: string? = nil
 local bindingButtons: { [string]: TextButton } = {}
+local pendingEggId: string? = nil
 
 local STREAKS = {
 	[2] = "DOUBLE KILL",
@@ -318,6 +319,25 @@ local function buildHud()
 		TextXAlignment = Enum.TextXAlignment.Center,
 		TextColor3 = C.Sun,
 	})
+
+	hudRefs.wrongWay = text(hud, {
+		Name = "WrongWay",
+		AnchorPoint = Vector2.new(0.5, 0),
+		Position = UDim2.new(0.5, 0, 0, 106),
+		Size = UDim2.new(0, 310, 0, 34),
+		Text = "WRONG WAY — TURN AROUND",
+		Font = FONT,
+		TextSize = 13,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		TextColor3 = C.White,
+		BackgroundColor3 = C.Coral,
+		BackgroundTransparency = 0.05,
+		TextStrokeTransparency = 0.5,
+		Visible = false,
+		ZIndex = 10,
+	})
+	corner(hudRefs.wrongWay, 8)
+	outline(hudRefs.wrongWay, C.Ink, 2, 0.15)
 
 	-- Wallet, top right.
 	local wallet = card(hud, {
@@ -700,10 +720,10 @@ local function buildMenu()
 		TextColor3 = C.Sun,
 	})
 	local tutorialLines = {
-		"WASD moves; Q/E controls altitude",
+		"W accelerates; S brakes; A/D turn",
+		"Q/E controls altitude",
 		"Mouse aims; hold left click to spray",
-		"Use the runway, then climb to take off",
-		"Avoid the electrical side walls and ceiling",
+		"Use a U-turn to fly back the other way",
 	}
 	for index, line in ipairs(tutorialLines) do
 		text(tutorial, {
@@ -922,6 +942,10 @@ local function addRow(titleText: string, descText: string, actionText: string, c
 		if not enabled then
 			return
 		end
+		if pendingEggId then
+			toast("PLEASE WAIT FOR THE EGG HATCH")
+			return
+		end
 		onClick()
 	end)
 	if not enabled then
@@ -1085,6 +1109,85 @@ renderers.Shields = function()
 	end
 end
 
+local function playEggHatch(eggId: string, resultMessage: string?)
+	if not gui or not gui.Parent then return end
+	local eggConfig = GameConfig.Eggs[eggId]
+	local eggColor = if eggConfig then eggConfig.Color or C.Grape else C.Grape
+	local petName = if type(resultMessage) == "string"
+		then (resultMessage:match("^Hatched (.-)!") or resultMessage:match("^Hatched (.-) %(") or "A NEW COMPANION")
+		else "A NEW COMPANION"
+
+	local overlay = new("Frame", {
+		Name = "EggHatchOverlay", Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = C.Ink, BackgroundTransparency = 0.18,
+		BorderSizePixel = 0, ZIndex = 80,
+	}, gui)
+	local title = new("TextLabel", {
+		Name = "Title", AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.25), Size = UDim2.new(0.8, 0, 0, 44),
+		BackgroundTransparency = 1, Text = "EGG HATCHING",
+		TextColor3 = C.White, Font = FONT, TextSize = 27, ZIndex = 82,
+	}, overlay)
+	local egg = new("Frame", {
+		Name = "Egg", AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.49), Size = UDim2.fromOffset(94, 124),
+		BackgroundColor3 = eggColor, BorderSizePixel = 0, ZIndex = 83,
+	}, overlay)
+	corner(egg, 48)
+	outline(egg, C.White, 4, 0.05)
+	gradient(egg, eggColor:Lerp(C.White, 0.28), eggColor:Lerp(C.Ink, 0.12), 90)
+	local shine = new("Frame", {
+		Name = "Shine", Position = UDim2.new(0, 16, 0, 18),
+		Size = UDim2.new(0, 13, 0, 40), BackgroundColor3 = C.White,
+		BackgroundTransparency = 0.18, BorderSizePixel = 0, Rotation = 20, ZIndex = 84,
+	}, egg)
+	corner(shine, 12)
+	local subtitle = new("TextLabel", {
+		Name = "Subtitle", AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.72), Size = UDim2.new(0.85, 0, 0, 34),
+		BackgroundTransparency = 1, Text = "A COMPANION IS INSIDE...",
+		TextColor3 = C.PaperDim, Font = FONT_BOLD, TextSize = 16, ZIndex = 82,
+	}, overlay)
+	local reveal = new("TextLabel", {
+		Name = "Reveal", AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.82), Size = UDim2.new(0.9, 0, 0, 48),
+		BackgroundTransparency = 1, Text = "", TextColor3 = eggColor,
+		Font = FONT, TextSize = 28, TextTransparency = 1, ZIndex = 82,
+	}, overlay)
+
+	TweenService:Create(egg,
+		TweenInfo.new(0.38, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, 2, true),
+		{ Size = UDim2.fromOffset(110, 142) }):Play()
+
+	task.spawn(function()
+		for _ = 1, 5 do
+			if not egg.Parent then return end
+			for _, angle in ipairs({ -13, 13, -9, 9, 0 }) do
+				TweenService:Create(egg, TweenInfo.new(0.075, Enum.EasingStyle.Quad), { Rotation = angle }):Play()
+				task.wait(0.075)
+			end
+		end
+	end)
+
+	task.delay(1.55, function()
+		if not overlay.Parent then return end
+		title.Text = "NEW COMPANION!"
+		subtitle.Text = "ADDED TO YOUR COLLECTION"
+		egg.Visible = false
+		reveal.Text = string.upper(petName)
+		TweenService:Create(reveal, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+			{ TextTransparency = 0, TextSize = 34 }):Play()
+		Effects.Play("Upgrade", nil, 0.65)
+	end)
+	task.delay(3.8, function()
+		if overlay.Parent then
+			TweenService:Create(overlay, TweenInfo.new(0.25), { BackgroundTransparency = 1 }):Play()
+			task.wait(0.28)
+			if overlay.Parent then overlay:Destroy() end
+		end
+	end)
+end
+
 renderers.Eggs = function()
 	local ids = {}
 	for id in pairs(GameConfig.Eggs) do
@@ -1094,6 +1197,11 @@ renderers.Eggs = function()
 	for _, id in ipairs(ids) do
 		local egg = GameConfig.Eggs[id]
 		addRow(egg.Name, "HATCH A RANDOM PET  •  LUCK IMPROVES THE ODDS", "HATCH  " .. egg.Cost .. " GEMS", egg.Color or C.Grape, State.Gems() >= egg.Cost, function()
+			if pendingEggId then
+				toast("AN EGG IS ALREADY HATCHING")
+				return
+			end
+			pendingEggId = id
 			Remotes.Get(Remotes.Purchase):FireServer({ Action = "egg", Id = id })
 		end)
 	end
@@ -1444,7 +1552,7 @@ local function openModal(titleText: string, build)
 end
 
 -- ------------------------------------------------------------------- hud ---
-local function updateHud(hp, maxHp, dist, coins, gems, kills, zoneName, bossFrac, comboSteps, comboMult, boost, revives, boosting)
+local function updateHud(hp, maxHp, dist, coins, gems, kills, zoneName, bossFrac, comboSteps, comboMult, boost, revives, boosting, wrongWay)
 	if not hud.Visible then
 		lastHealth = hp
 		lastStreakTier = 0
@@ -1473,6 +1581,7 @@ local function updateHud(hp, maxHp, dist, coins, gems, kills, zoneName, bossFrac
 	end
 	hudRefs.distance.Text = fmt(dist) .. " m"
 	hudRefs.zone.Text = string.upper(zoneName or "PAPER TOWN")
+	hudRefs.wrongWay.Visible = wrongWay == true
 	hudRefs.coins.Text = fmt(coins)
 	hudRefs.gems.Text = fmt(gems)
 
@@ -1743,10 +1852,10 @@ function UI.OpenSettings()
 	bindingCaptureAction = nil
 	table.clear(bindingButtons)
 	local labels = {
-		{ "Forward", "MOVE FORWARD" },
-		{ "Backward", "MOVE BACKWARD" },
-		{ "Left", "STRAFE LEFT" },
-		{ "Right", "STRAFE RIGHT" },
+		{ "Forward", "ACCELERATE" },
+		{ "Backward", "BRAKE" },
+		{ "Left", "TURN LEFT" },
+		{ "Right", "TURN RIGHT" },
 		{ "Descend", "DESCEND" },
 		{ "Ascend", "ASCEND" },
 		{ "Fire", "KEYBOARD FIRE (MOUSE 1 ALWAYS WORKS)" },
@@ -2109,8 +2218,11 @@ function UI.Init()
 		UI.RefreshShop()
 	end)
 	State.OnRunUpdate(function(...)
-		updateHud(...)
-	end)
+    print("[PaperWings] HUD EVENT RECEIVED")
+    updateHud(...)
+    print("[PaperWings] HUD visible:", hud.Visible)
+    print("[PaperWings] Menu visible:", menu.Visible)
+end)
 	State.OnRunEnded(function(result)
 		lastServerResult = nil
 		updateResults(result)
@@ -2128,9 +2240,13 @@ function UI.Init()
 	end)
 
 	Remotes.Get(Remotes.ShopSync).OnClientEvent:Connect(function(success, message)
+		local completedEggId = pendingEggId
+		pendingEggId = nil
 		if success then
 			Effects.Play("Upgrade", nil, 0.4)
-			if message and message ~= "" then
+			if completedEggId then
+				playEggHatch(completedEggId, message)
+			elseif message and message ~= "" then
 				toast(message)
 			end
 		elseif message and message ~= "" then

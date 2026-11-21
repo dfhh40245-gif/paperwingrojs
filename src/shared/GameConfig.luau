@@ -13,7 +13,7 @@ local GameConfig = {}
 -- Distance / movement -------------------------------------------------------
 GameConfig.MetersPerStud = 0.25 -- 4 studs == 1 m
 GameConfig.Corridor = {
-	HalfWidth = 26,
+	HalfWidth = 36,
 	MinHeight = 8, -- enemy/coin lower spawn band; aircraft can land below this
 	MaxHeight = 44,
 	GroundY = 0,
@@ -94,7 +94,7 @@ GameConfig.Zones = {
 		Ground = Color3.fromRGB(126, 190, 92),
 		Path = Color3.fromRGB(233, 206, 150),
 		Accent = Color3.fromRGB(255, 202, 76),
-		Enemies = { "Crane", "Crane", "InkBat" },
+		Enemies = { "Crane", "Crane", "InkBat", "PaperManta" },
 		Elite = { "StapleShooter" },
 		Song = "town",
 	},
@@ -113,7 +113,7 @@ GameConfig.Zones = {
 		Ground = Color3.fromRGB(206, 214, 222),
 		Path = Color3.fromRGB(255, 255, 255),
 		Accent = Color3.fromRGB(90, 140, 220),
-		Enemies = { "InkBat", "StapleShooter", "Crane", "PaperWasp" },
+		Enemies = { "InkBat", "StapleShooter", "Crane", "PaperWasp", "PaperManta" },
 		Elite = { "HolePunch" },
 		Song = "canyon",
 	},
@@ -132,7 +132,7 @@ GameConfig.Zones = {
 		Ground = Color3.fromRGB(35, 30, 70),
 		Path = Color3.fromRGB(40, 34, 80),
 		Accent = Color3.fromRGB(176, 111, 225),
-		Enemies = { "InkBlob", "EraserGolem", "InkBat", "GlueTrap" },
+		Enemies = { "InkBlob", "EraserGolem", "InkBat", "GlueTrap", "InkMine" },
 		Elite = { "MarkerSniper" },
 		Song = "ocean",
 	},
@@ -151,7 +151,7 @@ GameConfig.Zones = {
 		Ground = Color3.fromRGB(55, 48, 60),
 		Path = Color3.fromRGB(70, 60, 70),
 		Accent = Color3.fromRGB(190, 190, 200),
-		Enemies = { "PaperWasp", "StapleShooter", "EraserGolem", "InkBlob", "MarkerSniper" },
+		Enemies = { "PaperWasp", "StapleShooter", "EraserGolem", "InkBlob", "MarkerSniper", "PaperManta", "MirrorSentinel" },
 		Elite = { "HolePunch", "EraserGolem" },
 		Song = "storm",
 	},
@@ -170,7 +170,7 @@ GameConfig.Zones = {
 		Ground = Color3.fromRGB(250, 240, 226),
 		Path = Color3.fromRGB(255, 255, 255),
 		Accent = Color3.fromRGB(255, 140, 90),
-		Enemies = { "PaperWasp", "GlueTrap", "MarkerSniper", "StapleShooter" },
+		Enemies = { "PaperWasp", "GlueTrap", "MarkerSniper", "StapleShooter", "InkMine" },
 		Elite = { "EraserGolem", "HolePunch" },
 		Song = "clouds",
 	},
@@ -189,14 +189,14 @@ GameConfig.Zones = {
 		Ground = Color3.fromRGB(28, 26, 42),
 		Path = Color3.fromRGB(255, 214, 120),
 		Accent = Color3.fromRGB(255, 202, 76),
-		Enemies = { "MarkerSniper", "HolePunch", "EraserGolem", "PaperWasp", "InkBlob" },
+		Enemies = { "MarkerSniper", "HolePunch", "EraserGolem", "PaperWasp", "InkBlob", "MirrorSentinel" },
 		Elite = { "EraserGolem", "MarkerSniper" },
 		Song = "fold",
 	},
 }
 
 -- Enemies -------------------------------------------------------------------
--- Behavior is one of: straight | zigzag | ranged | split | tank
+-- Behavior is one of: straight | zigzag | ranged | split | tank | charger | mine | phase
 GameConfig.Enemies = {
 	Crane = {
 		Name = "Paper Crane",
@@ -309,6 +309,50 @@ GameConfig.Enemies = {
 		Color = Color3.fromRGB(120, 130, 150),
 		Accent = Color3.fromRGB(80, 88, 104),
 		Scale = 1.62,
+	},
+	PaperManta = {
+		Name = "Paper Manta",
+		Behavior = "charger",
+		Health = 58,
+		Speed = 31,
+		Damage = 16,
+		Coins = 20,
+		Gems = 1,
+		Color = Color3.fromRGB(75, 170, 205),
+		Accent = Color3.fromRGB(180, 245, 255),
+		Scale = 1.55,
+		AbilityInterval = 3.4,
+	},
+	InkMine = {
+		Name = "Ink Mine",
+		Behavior = "mine",
+		Health = 82,
+		Speed = 0,
+		Damage = 26,
+		Coins = 24,
+		Gems = 2,
+		Color = Color3.fromRGB(62, 45, 108),
+		Accent = Color3.fromRGB(255, 92, 128),
+		Scale = 1.45,
+		FireInterval = 2.8,
+		ProjectileSpeed = 34,
+		ProjectileDamage = 12,
+	},
+	MirrorSentinel = {
+		Name = "Mirror Sentinel",
+		Behavior = "phase",
+		Health = 76,
+		Speed = 22,
+		Damage = 15,
+		Coins = 28,
+		Gems = 2,
+		Color = Color3.fromRGB(120, 190, 210),
+		Accent = Color3.fromRGB(220, 250, 255),
+		Scale = 1.5,
+		AbilityInterval = 2.2,
+		FireInterval = 2.5,
+		ProjectileSpeed = 38,
+		ProjectileDamage = 13,
 	},
 }
 
