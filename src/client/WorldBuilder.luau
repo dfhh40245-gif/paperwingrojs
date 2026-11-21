@@ -697,7 +697,7 @@ local function buildMapLandmarks(parent, zone, centerZ, halfLength, rng)
 end
 
 function WorldBuilder.BuildChunk(zoneId: string, centerZ: number, halfLength: number, seed: number): Model
-	local zone = GameConfig.ZonesById[zoneId] or GameConfig.Zones[1]
+	local zone = GameConfig.GetZoneById(zoneId) or GameConfig.Zones[1]
 	local rng = Random.new(seed)
 	local model = Instance.new("Model")
 	model.Name = "Chunk_" .. zone.Id
